@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 export const runtime = 'edge';
 
-const IMAGEN_NANO_MODEL = 'imagen-3.0-nano-banana';
+const IMAGEN_NANO_MODEL = 'imagen-3.0-generate-001';
 const LEGACY_MODEL = 'imagegeneration@002';
 const GEMINI_MODEL = 'gemini-2.5-flash-image';
 const IMAGEN_NANO_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${IMAGEN_NANO_MODEL}:generateContent`;

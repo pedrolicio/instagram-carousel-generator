@@ -1,7 +1,7 @@
 import { buildImagenPrompt, buildNegativePrompt } from '../utils/promptBuilder.js';
 
 const IMAGEN_PROXY_ENDPOINT = '/api/imagen';
-const IMAGEN_NANO_MODEL = 'imagen-3.0-nano-banana';
+const IMAGEN_NANO_MODEL = 'imagen-3.0-generate-001';
 const IMAGEN_NANO_ENDPOINT =
   `https://generativelanguage.googleapis.com/v1beta/models/${IMAGEN_NANO_MODEL}:generateContent`;
 const GEMINI_IMAGE_ENDPOINT =
@@ -396,7 +396,7 @@ const shouldRetryWithFallbackModel = (error) => {
     message.includes('deprecated') ||
     message.includes('not found') ||
     message.includes('imagen-3.0') ||
-    message.includes('nano-banana') ||
+    message.includes('generate-001') ||
     message.includes('gemini-2.5') ||
     message.includes('flash-image')
   );
