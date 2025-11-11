@@ -22,6 +22,30 @@ const formatNetworkError = (error) => {
   return enhanced;
 };
 
+const normalizeJsonText = (text) =>
+  text
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .trim();
+
+const extractJsonPayload = (content) => {
+  if (typeof content !== 'string') return '';
+
+  const codeBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (codeBlockMatch) {
+    return normalizeJsonText(codeBlockMatch[1]);
+  }
+
+  const firstBrace = content.indexOf('{');
+  const lastBrace = content.lastIndexOf('}');
+
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    return normalizeJsonText(content.slice(firstBrace, lastBrace + 1));
+  }
+
+  return normalizeJsonText(content);
+};
+
 export async function generateCarouselContent({ theme, brandKit, apiKey, signal }) {
   if (!theme) {
     throw new Error('Informe um tema para gerar o carrossel.');
@@ -73,7 +97,13 @@ export async function generateCarouselContent({ theme, brandKit, apiKey, signal 
   }
 
   try {
-    return JSON.parse(rawContent);
+    const jsonPayload = extractJsonPayload(rawContent);
+
+    if (!jsonPayload) {
+      throw new Error('Empty content');
+    }
+
+    return JSON.parse(jsonPayload);
   } catch (error) {
     console.error('[claudeService] Failed to parse JSON response', error, rawContent);
     throw new Error('Não foi possível interpretar a resposta da Claude API.');
