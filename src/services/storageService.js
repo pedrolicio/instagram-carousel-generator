@@ -1,7 +1,12 @@
 const STORAGE_KEYS = {
   clients: 'icg.clients',
   carousels: 'icg.carousels',
-  apiKeys: 'icg.apiKeys'
+  apiKeys: 'icg.apiKeys',
+  settings: 'icg.settings'
+};
+
+const DEFAULT_SETTINGS = {
+  anthropicTestMode: false
 };
 
 const SECRET_SESSION_KEY = 'icg.apiSecret';
@@ -177,6 +182,10 @@ export const saveClientsToStorage = (clients) => writeStorage(STORAGE_KEYS.clien
 export const getCarouselsFromStorage = () => readStorage(STORAGE_KEYS.carousels, []);
 export const saveCarouselsToStorage = (carousels) => writeStorage(STORAGE_KEYS.carousels, carousels);
 
+export const getSettingsFromStorage = () => readStorage(STORAGE_KEYS.settings, DEFAULT_SETTINGS);
+export const saveSettingsToStorage = (settings) =>
+  writeStorage(STORAGE_KEYS.settings, { ...DEFAULT_SETTINGS, ...settings });
+
 export const getApiKeyStorageMetadata = () => {
   const stored = readStorage(STORAGE_KEYS.apiKeys, null);
   const encrypted = Boolean(stored?.ciphertext && stored?.iv && stored?.salt);
@@ -254,5 +263,8 @@ export const __internal = {
   rememberEncryptionSecret,
   getRememberedEncryptionSecret,
   clearRememberedEncryptionSecret,
-  STORAGE_KEYS
+  getSettingsFromStorage,
+  saveSettingsToStorage,
+  STORAGE_KEYS,
+  DEFAULT_SETTINGS
 };

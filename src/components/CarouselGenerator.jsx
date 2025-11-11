@@ -36,7 +36,7 @@ const createMockCarousel = (theme, brandKit) => {
 };
 
 export const CarouselGenerator = ({ selectedClientId, onSelectClient }) => {
-  const { clients, addCarousel, apiKeys } = useAppContext();
+  const { clients, addCarousel, apiKeys, settings } = useAppContext();
   const [theme, setTheme] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState('');
@@ -63,6 +63,12 @@ export const CarouselGenerator = ({ selectedClientId, onSelectClient }) => {
     setPrompts([]);
 
     try {
+      if (settings?.anthropicTestMode) {
+        setContent(createMockCarousel(theme, selectedClient));
+        setSuccessMessage('Modo de teste ativado: conteúdo de demonstração gerado sem chamar a Claude.');
+        return;
+      }
+
       const generated = await generateCarouselContent({
         theme,
         brandKit: selectedClient,

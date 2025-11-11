@@ -4,6 +4,8 @@ import {
   saveClientsToStorage,
   getCarouselsFromStorage,
   saveCarouselsToStorage,
+  getSettingsFromStorage,
+  saveSettingsToStorage,
   loadApiKeysFromStorage,
   saveApiKeysToStorage,
   getApiKeyStorageMetadata,
@@ -12,6 +14,10 @@ import {
   clearRememberedEncryptionSecret,
   clearStorage
 } from '../services/storageService.js';
+
+const DEFAULT_SETTINGS = {
+  anthropicTestMode: false
+};
 
 const AppContext = createContext(undefined);
 
@@ -24,6 +30,7 @@ export const AppProvider = ({ children }) => {
   const [apiKeysEncrypted, setApiKeysEncrypted] = useState(false);
   const [encryptionSecret, setEncryptionSecret] = useState('');
   const [rememberSecret, setRememberSecret] = useState(false);
+  const [settings, setSettings] = useState(() => ({ ...DEFAULT_SETTINGS, ...getSettingsFromStorage() }));
 
   useEffect(() => {
     setClients(getClientsFromStorage());
@@ -37,6 +44,10 @@ export const AppProvider = ({ children }) => {
   useEffect(() => {
     saveCarouselsToStorage(carousels);
   }, [carousels]);
+
+  useEffect(() => {
+    saveSettingsToStorage(settings);
+  }, [settings]);
 
   useEffect(() => {
     let isMounted = true;
@@ -137,7 +148,12 @@ export const AppProvider = ({ children }) => {
     lockApiKeys();
     setHasStoredApiKeys(false);
     setApiKeysEncrypted(false);
+    setSettings(DEFAULT_SETTINGS);
   }, [lockApiKeys]);
+
+  const updateSettings = useCallback((patch) => {
+    setSettings((prev) => ({ ...prev, ...patch }));
+  }, []);
 
   const value = useMemo(
     () => ({
@@ -159,10 +175,12 @@ export const AppProvider = ({ children }) => {
       encryptionSecret,
       apiKeysEncrypted,
       rememberSecret,
+      settings,
       persistApiKeys,
       unlockApiKeys,
       lockApiKeys,
-      clearAllData
+      clearAllData,
+      updateSettings
     }),
     [
       clients,
@@ -173,10 +191,12 @@ export const AppProvider = ({ children }) => {
       encryptionSecret,
       apiKeysEncrypted,
       rememberSecret,
+      settings,
       persistApiKeys,
       unlockApiKeys,
       lockApiKeys,
-      clearAllData
+      clearAllData,
+      updateSettings
     ]
   );
 
