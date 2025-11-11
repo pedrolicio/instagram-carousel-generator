@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Eye, EyeOff, KeyRound, Lock, ShieldCheck, Trash2, Unlock } from 'lucide-react';
+import { Eye, EyeOff, FlaskConical, KeyRound, Lock, ShieldCheck, Trash2, Unlock } from 'lucide-react';
 import { useAppContext } from '../context/AppContext.jsx';
 
 const inputBase =
@@ -16,7 +16,9 @@ export const ApiKeySettings = () => {
     persistApiKeys,
     unlockApiKeys,
     lockApiKeys,
-    clearAllData
+    clearAllData,
+    settings,
+    updateSettings
   } = useAppContext();
 
   const [localKeys, setLocalKeys] = useState(apiKeys);
@@ -103,8 +105,9 @@ export const ApiKeySettings = () => {
   };
 
   return (
-    <section className="flex flex-col gap-6">
-      <div className="rounded-2xl border border-primary/10 bg-surface p-6 shadow-sm">
+    <div className="flex flex-col gap-6">
+      <section className="flex flex-col gap-6">
+        <div className="rounded-2xl border border-primary/10 bg-surface p-6 shadow-sm">
         <header className="mb-4 flex items-center gap-3">
           <KeyRound className="h-6 w-6 text-primary" />
           <div>
@@ -234,6 +237,41 @@ export const ApiKeySettings = () => {
           </p>
         )}
       </div>
-    </section>
+      </section>
+
+      <section className="rounded-2xl border border-primary/10 bg-surface p-6 shadow-sm">
+        <header className="mb-4 flex items-center gap-3">
+          <FlaskConical className="h-6 w-6 text-primary" />
+          <div>
+            <h2 className="text-xl font-semibold text-text">Modo de teste</h2>
+            <p className="text-sm text-text/70">
+              Utilize o modo de teste para simular conteúdos sem disparar requisições para a Claude API.
+            </p>
+          </div>
+        </header>
+
+        <label className="flex items-start gap-3 text-sm text-text/80">
+          <input
+            type="checkbox"
+            checked={settings.anthropicTestMode}
+            onChange={(event) => updateSettings({ anthropicTestMode: event.target.checked })}
+            className="mt-1 h-4 w-4 rounded border-primary/40 text-primary focus:ring-primary/40"
+          />
+          <span className="flex flex-col gap-1">
+            <span className="font-semibold text-text">Ativar modo de teste para textos</span>
+            <span className="text-xs text-text/70">
+              Quando habilitado, o gerador de carrossel usa conteúdos demonstrativos para economizar seus créditos da Claude.
+            </span>
+          </span>
+        </label>
+
+        {settings.anthropicTestMode && (
+          <p className="mt-4 rounded-xl bg-warning/10 px-4 py-3 text-xs text-warning">
+            Enquanto o modo de teste estiver ativado, nenhum conteúdo real será solicitado à Claude. Desative-o quando quiser
+            gerar textos definitivos.
+          </p>
+        )}
+      </section>
+    </div>
   );
 };
