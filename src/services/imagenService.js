@@ -7,11 +7,12 @@ const IMAGEN_CONFIG = {
   personGeneration: 'allow_adult'
 };
 
-const IMAGEN_MODEL = 'models/imagen-3.0';
+const IMAGEN_MODEL = 'models/imagegeneration';
+const FALLBACK_IMAGEN_MODEL = 'models/imagegeneration@002';
 const GENERATE_IMAGES_ENDPOINT =
-  `https://generativelanguage.googleapis.com/v1beta/${IMAGEN_MODEL}:generateImages`;
-const LEGACY_ENDPOINT =
-  'https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict';
+  'https://generativelanguage.googleapis.com/v1beta/models/imagegeneration:generate';
+const FALLBACK_GENERATE_ENDPOINT =
+  'https://generativelanguage.googleapis.com/v1beta/models/imagegeneration@002:generate';
 
 const extractBase64Image = (payload) => {
   if (!payload) return '';
@@ -47,7 +48,7 @@ const isNetworkError = (error) => {
   return /network/i.test(error.message || '');
 };
 
-const shouldRetryWithLegacyPredict = (error) => {
+const shouldRetryWithFallbackModel = (error) => {
   if (!error) return false;
   if (isNetworkError(error)) return true;
 
@@ -58,7 +59,8 @@ const shouldRetryWithLegacyPredict = (error) => {
   return (
     message.includes('legacy') ||
     message.includes('predict') ||
-    message.includes('deprecated')
+    message.includes('deprecated') ||
+    message.includes('not found')
   );
 };
 
@@ -76,22 +78,30 @@ const formatNetworkError = (error, fallbackMessage) => {
 
 // --- Chamadas às APIs ---
 
-const callLegacyPredict = async ({ prompt, negativePrompt, apiKey, signal }) => {
-  const response = await fetch(`${LEGACY_ENDPOINT}?key=${apiKey}`, {
+const callFallbackGenerate = async ({ prompt, negativePrompt, apiKey, signal }) => {
+  const payload = {
+    model: FALLBACK_IMAGEN_MODEL,
+    prompt: { text: prompt },
+    imageGenerationConfig: {
+      numberOfImages: IMAGEN_CONFIG.numberOfImages,
+      aspectRatio: IMAGEN_CONFIG.aspectRatio,
+      outputMimeType: 'image/png',
+      safetyFilterLevel: IMAGEN_CONFIG.safetyFilterLevel,
+      personGeneration: IMAGEN_CONFIG.personGeneration
+    }
+  };
+
+  if (negativePrompt) {
+    payload.negativePrompt = { text: negativePrompt };
+  }
+
+  const response = await fetch(`${FALLBACK_GENERATE_ENDPOINT}?key=${apiKey}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': apiKey
     },
-    body: JSON.stringify({
-      instances: [{ prompt, negativePrompt }],
-      parameters: {
-        sampleCount: IMAGEN_CONFIG.numberOfImages,
-        aspectRatio: IMAGEN_CONFIG.aspectRatio,
-        safetyFilterLevel: IMAGEN_CONFIG.safetyFilterLevel,
-        personGeneration: IMAGEN_CONFIG.personGeneration
-      }
-    }),
+    body: JSON.stringify(payload),
     signal
   });
 
@@ -116,7 +126,7 @@ const callGenerateImages = async ({ prompt, negativePrompt, apiKey, signal }) =>
     payload.negativePrompt = { text: negativePrompt };
   }
 
-  const response = await fetch(GENERATE_IMAGES_ENDPOINT, {
+  const response = await fetch(`${GENERATE_IMAGES_ENDPOINT}?key=${apiKey}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -149,17 +159,17 @@ export async function generateSlideImage({ prompt, negativePrompt, apiKey, signa
       callGenerateImages({ prompt, negativePrompt: resolvedNegativePrompt, apiKey, signal })
     );
   } catch (generateImagesError) {
-    if (!shouldRetryWithLegacyPredict(generateImagesError)) {
+    if (!shouldRetryWithFallbackModel(generateImagesError)) {
       throw formatNetworkError(generateImagesError);
     }
 
     try {
       return await attemptExtraction(
-        callLegacyPredict({ prompt, negativePrompt: resolvedNegativePrompt, apiKey, signal })
+        callFallbackGenerate({ prompt, negativePrompt: resolvedNegativePrompt, apiKey, signal })
       );
-    } catch (legacyError) {
-      const formatted = formatNetworkError(legacyError);
-      if (formatted === legacyError && generateImagesError?.message) {
+    } catch (fallbackError) {
+      const formatted = formatNetworkError(fallbackError);
+      if (formatted === fallbackError && generateImagesError?.message) {
         formatted.message = `${formatted.message} (tentativa anterior: ${generateImagesError.message})`;
       }
       throw formatted;
