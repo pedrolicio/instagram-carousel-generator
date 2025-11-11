@@ -250,6 +250,40 @@ const sanitizeCarouselsForStorage = (carousels) => {
 export const getCarouselsFromStorage = () => sanitizeCarouselsForStorage(readStorage(STORAGE_KEYS.carousels, []));
 export const saveCarouselsToStorage = (carousels) => writeStorage(STORAGE_KEYS.carousels, sanitizeCarouselsForStorage(carousels));
 
+export const saveCarouselsToStorageWithQuotaFallback = (carousels) => {
+  const sanitized = sanitizeCarouselsForStorage(carousels);
+
+  if (writeStorage(STORAGE_KEYS.carousels, sanitized)) {
+    return {
+      success: true,
+      persisted: sanitized,
+      removedCount: 0
+    };
+  }
+
+  const mutable = [...sanitized];
+  let removedCount = 0;
+
+  while (mutable.length > 0) {
+    mutable.pop();
+    removedCount += 1;
+
+    if (writeStorage(STORAGE_KEYS.carousels, mutable)) {
+      return {
+        success: true,
+        persisted: mutable,
+        removedCount
+      };
+    }
+  }
+
+  return {
+    success: false,
+    persisted: sanitized,
+    removedCount
+  };
+};
+
 export const getSettingsFromStorage = () => readStorage(STORAGE_KEYS.settings, DEFAULT_SETTINGS);
 export const saveSettingsToStorage = (settings) =>
   writeStorage(STORAGE_KEYS.settings, { ...DEFAULT_SETTINGS, ...settings });

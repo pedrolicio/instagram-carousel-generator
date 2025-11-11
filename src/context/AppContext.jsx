@@ -3,7 +3,7 @@ import {
   getClientsFromStorage,
   saveClientsToStorage,
   getCarouselsFromStorage,
-  saveCarouselsToStorage,
+  saveCarouselsToStorageWithQuotaFallback,
   getSettingsFromStorage,
   saveSettingsToStorage,
   loadApiKeysFromStorage,
@@ -21,6 +21,9 @@ const DEFAULT_SETTINGS = {
 
 export const CAROUSEL_STORAGE_ERROR_MESSAGE =
   'Não foi possível salvar o histórico local. Remova alguns itens e tente novamente.';
+
+const CAROUSEL_STORAGE_WARNING_MESSAGE =
+  'Histórico cheio: removemos os itens mais antigos para liberar espaço.';
 
 const MAX_CAROUSEL_HISTORY = 20;
 
@@ -42,9 +45,20 @@ export const AppProvider = ({ children }) => {
     setClients(getClientsFromStorage());
     const storedCarousels = getCarouselsFromStorage();
     const limitedCarousels = storedCarousels.slice(0, MAX_CAROUSEL_HISTORY);
-    setCarousels(limitedCarousels);
-    saveCarouselsToStorage(limitedCarousels);
-  }, []);
+    const { success, persisted, removedCount } = saveCarouselsToStorageWithQuotaFallback(limitedCarousels);
+
+    if (success) {
+      setCarousels(persisted);
+      if (removedCount > 0) {
+        setCarouselStorageError(CAROUSEL_STORAGE_WARNING_MESSAGE);
+      }
+    } else {
+      setCarousels(limitedCarousels);
+      if (limitedCarousels.length > 0) {
+        setCarouselStorageError(CAROUSEL_STORAGE_ERROR_MESSAGE);
+      }
+    }
+  }, [setCarouselStorageError, saveCarouselsToStorageWithQuotaFallback]);
 
   useEffect(() => {
     saveClientsToStorage(clients);
@@ -62,22 +76,26 @@ export const AppProvider = ({ children }) => {
         const updated = typeof updater === 'function' ? updater(previous) : updater;
         const normalized = Array.isArray(updated) ? updated : [];
         const trimmed = normalized.slice(0, MAX_CAROUSEL_HISTORY);
-        const saved = saveCarouselsToStorage(trimmed);
+        const { success, persisted, removedCount } = saveCarouselsToStorageWithQuotaFallback(trimmed);
 
-        if (!saved) {
+        if (!success) {
           setCarouselStorageError(CAROUSEL_STORAGE_ERROR_MESSAGE);
           didPersist = false;
           return previous;
         }
 
-        setCarouselStorageError('');
+        if (removedCount > 0) {
+          setCarouselStorageError(CAROUSEL_STORAGE_WARNING_MESSAGE);
+        } else {
+          setCarouselStorageError('');
+        }
         didPersist = true;
-        return trimmed;
+        return persisted;
       });
 
       return didPersist;
     },
-    [setCarouselStorageError, saveCarouselsToStorage]
+    [setCarouselStorageError, saveCarouselsToStorageWithQuotaFallback]
   );
 
   const addCarousel = useCallback((carousel) => persistCarousels((prev) => [carousel, ...prev]), [persistCarousels]);
