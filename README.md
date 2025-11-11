@@ -8,7 +8,7 @@ Plataforma web desenvolvida com React e TailwindCSS que permite agências de mar
 - **Geração automática de conteúdo**: integração com a API da Claude (Anthropic) para sugerir slides, legendas e descrições visuais.
 - **Geração de imagens**: prompts otimizados para a API Imagen 3 (Google AI) com acompanhamento de progresso.
 - **Histórico**: armazena todos os carrosséis gerados com filtros por cliente e busca por tema.
-- **Configurações de API**: armazenamento seguro (com codificação base64) das chaves de API no navegador.
+- **Configurações de API**: criptografia local AES-GCM protegida por frase-secreta para as chaves de API.
 
 ## 🧱 Estrutura do Projeto
 
