@@ -7,10 +7,11 @@ const IMAGEN_CONFIG = {
   personGeneration: 'allow_adult'
 };
 
+const IMAGEN_MODEL = 'models/imagen-3.0';
+const GENERATE_IMAGES_ENDPOINT =
+  `https://generativelanguage.googleapis.com/v1beta/${IMAGEN_MODEL}:generateImages`;
 const LEGACY_ENDPOINT =
   'https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict';
-const GENERATE_IMAGE_ENDPOINT =
-  'https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0:generateImage';
 
 const extractBase64Image = (payload) => {
   if (!payload) return '';
@@ -19,6 +20,7 @@ const extractBase64Image = (payload) => {
     payload?.predictions?.[0]?.bytesBase64Encoded,
     payload?.predictions?.[0]?.base64Image,
     payload?.images?.[0]?.base64,
+    payload?.images?.[0]?.content,
     payload?.images?.[0]?.content?.base64,
     payload?.artifacts?.[0]?.base64,
     payload?.data?.[0]?.b64_json,
@@ -45,16 +47,18 @@ const isNetworkError = (error) => {
   return /network/i.test(error.message || '');
 };
 
-const shouldRetryWithGenerateImage = (error) => {
+const shouldRetryWithLegacyPredict = (error) => {
   if (!error) return false;
   if (isNetworkError(error)) return true;
 
+  if (error.status === 404 || error.status === 405) return true;
+  if (error.status >= 500) return true;
+
   const message = (error.payload?.error?.message || error.message || '').toLowerCase();
   return (
-    /not (found|supported) for predict/.test(message) ||
-    message.includes('use the generateimage endpoint') ||
-    message.includes('use the generateimage method') ||
-    message.includes('please call generateimage')
+    message.includes('legacy') ||
+    message.includes('predict') ||
+    message.includes('deprecated')
   );
 };
 
@@ -75,7 +79,10 @@ const formatNetworkError = (error, fallbackMessage) => {
 const callLegacyPredict = async ({ prompt, negativePrompt, apiKey, signal }) => {
   const response = await fetch(`${LEGACY_ENDPOINT}?key=${apiKey}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': apiKey
+    },
     body: JSON.stringify({
       instances: [{ prompt, negativePrompt }],
       parameters: {
@@ -92,21 +99,30 @@ const callLegacyPredict = async ({ prompt, negativePrompt, apiKey, signal }) => 
   return response.json();
 };
 
-const callGenerateImage = async ({ prompt, negativePrompt, apiKey, signal }) => {
-  const response = await fetch(`${GENERATE_IMAGE_ENDPOINT}?key=${apiKey}`, {
+const callGenerateImages = async ({ prompt, negativePrompt, apiKey, signal }) => {
+  const payload = {
+    model: IMAGEN_MODEL,
+    prompt: { text: prompt },
+    imageGenerationConfig: {
+      numberOfImages: IMAGEN_CONFIG.numberOfImages,
+      aspectRatio: IMAGEN_CONFIG.aspectRatio,
+      outputMimeType: 'image/png',
+      safetyFilterLevel: IMAGEN_CONFIG.safetyFilterLevel,
+      personGeneration: IMAGEN_CONFIG.personGeneration
+    }
+  };
+
+  if (negativePrompt) {
+    payload.negativePrompt = { text: negativePrompt };
+  }
+
+  const response = await fetch(GENERATE_IMAGES_ENDPOINT, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'models/imagen-3.0-generate-001',
-      prompt,
-      negativePrompt,
-      parameters: {
-        aspectRatio: IMAGEN_CONFIG.aspectRatio,
-        numberOfImages: IMAGEN_CONFIG.numberOfImages,
-        safetyFilterLevel: IMAGEN_CONFIG.safetyFilterLevel,
-        personGeneration: IMAGEN_CONFIG.personGeneration
-      }
-    }),
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': apiKey
+    },
+    body: JSON.stringify(payload),
     signal
   });
 
@@ -130,19 +146,21 @@ export async function generateSlideImage({ prompt, negativePrompt, apiKey, signa
 
   try {
     return await attemptExtraction(
-      callLegacyPredict({ prompt, negativePrompt: resolvedNegativePrompt, apiKey, signal })
+      callGenerateImages({ prompt, negativePrompt: resolvedNegativePrompt, apiKey, signal })
     );
-  } catch (legacyError) {
-    if (!shouldRetryWithGenerateImage(legacyError)) throw formatNetworkError(legacyError);
+  } catch (generateImagesError) {
+    if (!shouldRetryWithLegacyPredict(generateImagesError)) {
+      throw formatNetworkError(generateImagesError);
+    }
 
     try {
       return await attemptExtraction(
-        callGenerateImage({ prompt, negativePrompt: resolvedNegativePrompt, apiKey, signal })
+        callLegacyPredict({ prompt, negativePrompt: resolvedNegativePrompt, apiKey, signal })
       );
-    } catch (generateImageError) {
-      const formatted = formatNetworkError(generateImageError);
-      if (formatted === generateImageError && legacyError?.message) {
-        formatted.message = `${formatted.message} (tentativa anterior: ${legacyError.message})`;
+    } catch (legacyError) {
+      const formatted = formatNetworkError(legacyError);
+      if (formatted === legacyError && generateImagesError?.message) {
+        formatted.message = `${formatted.message} (tentativa anterior: ${generateImagesError.message})`;
       }
       throw formatted;
     }
