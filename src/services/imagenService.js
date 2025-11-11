@@ -25,7 +25,7 @@ const extractBase64Image = (payload) => {
     payload?.generatedImages?.[0]?.bytesBase64Encoded
   ];
 
-  return candidates.find((value) => typeof value === 'string' && value.length > 0) || '';
+  return candidates.find((v) => typeof v === 'string' && v.length > 0) || '';
 };
 
 const createApiError = async (response) => {
@@ -37,24 +37,47 @@ const createApiError = async (response) => {
   return error;
 };
 
-const shouldRetryWithGenerateImage = (error) => {
-  if (!error?.message) return false;
-  return /not (found|supported) for predict/i.test(error.message);
+// --- Funções de verificação e tratamento de erro ---
+
+const isNetworkError = (error) => {
+  if (!error) return false;
+  if (error.name === 'TypeError' && /fetch/i.test(error.message || '')) return true;
+  return /network/i.test(error.message || '');
 };
+
+const shouldRetryWithGenerateImage = (error) => {
+  if (!error) return false;
+  if (isNetworkError(error)) return true;
+
+  const message = (error.payload?.error?.message || error.message || '').toLowerCase();
+  return (
+    /not (found|supported) for predict/.test(message) ||
+    message.includes('use the generateimage endpoint') ||
+    message.includes('use the generateimage method') ||
+    message.includes('please call generateimage')
+  );
+};
+
+const formatNetworkError = (error, fallbackMessage) => {
+  if (!isNetworkError(error)) return error;
+
+  const enhanced = new Error(
+    fallbackMessage ||
+      'Não foi possível se conectar à Imagen API. Verifique sua conexão com a internet, a chave de API e tente novamente.'
+  );
+
+  enhanced.cause = error;
+  return enhanced;
+};
+
+// --- Chamadas às APIs ---
 
 const callLegacyPredict = async ({ prompt, negativePrompt, apiKey, signal }) => {
   const response = await fetch(`${LEGACY_ENDPOINT}?key=${apiKey}`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      instances: [
-        {
-          prompt,
-          negativePrompt
-        }
-      ],
+      instances: [{ prompt, negativePrompt }],
       parameters: {
         sampleCount: IMAGEN_CONFIG.numberOfImages,
         aspectRatio: IMAGEN_CONFIG.aspectRatio,
@@ -65,19 +88,14 @@ const callLegacyPredict = async ({ prompt, negativePrompt, apiKey, signal }) => 
     signal
   });
 
-  if (!response.ok) {
-    throw await createApiError(response);
-  }
-
+  if (!response.ok) throw await createApiError(response);
   return response.json();
 };
 
 const callGenerateImage = async ({ prompt, negativePrompt, apiKey, signal }) => {
   const response = await fetch(`${GENERATE_IMAGE_ENDPOINT}?key=${apiKey}`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: 'models/imagen-3.0-generate-001',
       prompt,
@@ -92,28 +110,21 @@ const callGenerateImage = async ({ prompt, negativePrompt, apiKey, signal }) => 
     signal
   });
 
-  if (!response.ok) {
-    throw await createApiError(response);
-  }
-
+  if (!response.ok) throw await createApiError(response);
   return response.json();
 };
 
+// --- Função principal de geração ---
+
 export async function generateSlideImage({ prompt, negativePrompt, apiKey, signal }) {
-  if (!apiKey) {
-    throw new Error('Configure a Google AI API Key antes de gerar imagens.');
-  }
+  if (!apiKey) throw new Error('Configure a Google AI API Key antes de gerar imagens.');
 
   const resolvedNegativePrompt = negativePrompt || buildNegativePrompt();
 
   const attemptExtraction = async (request) => {
     const payload = await request;
     const base64Image = extractBase64Image(payload);
-
-    if (!base64Image) {
-      throw new Error('A resposta da Imagen API não contém imagem válida.');
-    }
-
+    if (!base64Image) throw new Error('A resposta da Imagen API não contém imagem válida.');
     return base64Image;
   };
 
@@ -122,23 +133,29 @@ export async function generateSlideImage({ prompt, negativePrompt, apiKey, signa
       callLegacyPredict({ prompt, negativePrompt: resolvedNegativePrompt, apiKey, signal })
     );
   } catch (legacyError) {
-    if (!shouldRetryWithGenerateImage(legacyError)) {
-      throw legacyError;
-    }
+    if (!shouldRetryWithGenerateImage(legacyError)) throw formatNetworkError(legacyError);
 
-    return await attemptExtraction(
-      callGenerateImage({ prompt, negativePrompt: resolvedNegativePrompt, apiKey, signal })
-    );
+    try {
+      return await attemptExtraction(
+        callGenerateImage({ prompt, negativePrompt: resolvedNegativePrompt, apiKey, signal })
+      );
+    } catch (generateImageError) {
+      const formatted = formatNetworkError(generateImageError);
+      if (formatted === generateImageError && legacyError?.message) {
+        formatted.message = `${formatted.message} (tentativa anterior: ${legacyError.message})`;
+      }
+      throw formatted;
+    }
   }
 }
+
+// --- Geração de múltiplas imagens (ex.: carrossel) ---
 
 export async function generateCarouselImages({ slides, brandKit, apiKey, onProgress, signal }) {
   const results = [];
 
   for (const slide of slides) {
-    if (signal?.aborted) {
-      throw new Error('Geração de imagens cancelada.');
-    }
+    if (signal?.aborted) throw new Error('Geração de imagens cancelada.');
 
     const prompt = buildImagenPrompt(slide, brandKit);
     const image = await generateSlideImage({ prompt, apiKey, signal });
