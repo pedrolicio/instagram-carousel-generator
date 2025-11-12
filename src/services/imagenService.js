@@ -192,7 +192,7 @@ const callImagenProxy = async ({ prompt, negativePrompt, apiKey, signal }) => {
 
   if (payload.error) {
     const proxyError = new Error(payload.error?.message || 'Falha ao gerar imagem com a Imagen API.');
-    proxyError.payload = payload.error?.details;
+    proxyError.payload = payload.error || payload;
     if (Number.isFinite(payload.error?.retryAfterSeconds) && payload.error.retryAfterSeconds > 0) {
       proxyError.retryAfterSeconds = payload.error.retryAfterSeconds;
     }
@@ -201,7 +201,9 @@ const callImagenProxy = async ({ prompt, negativePrompt, apiKey, signal }) => {
 
   const { image } = payload;
   if (!image || typeof image !== 'string') {
-    throw new Error('A resposta do proxy não contém uma imagem válida.');
+    const invalidImageError = new Error('A resposta do proxy não contém uma imagem válida.');
+    invalidImageError.payload = payload;
+    throw invalidImageError;
   }
 
   return image;
@@ -258,7 +260,7 @@ const callImagenDefaultModel = async ({ prompt, negativePrompt, apiKey, signal }
   const base64Image = extractBase64Image(result);
 
   if (!base64Image) {
-    throw createImagenApiError('O modelo Imagen 4.0 não retornou uma imagem válida.');
+    throw createImagenApiError('O modelo Imagen 4.0 não retornou uma imagem válida.', response.status, result);
   }
 
   return base64Image;
@@ -304,7 +306,7 @@ const callGeminiFlashImageModel = async ({ prompt, negativePrompt, apiKey, signa
   const base64Image = extractBase64Image(result);
 
   if (!base64Image) {
-    throw createImagenApiError('A resposta da Imagen API não contém imagem válida.');
+    throw createImagenApiError('A resposta da Imagen API não contém imagem válida.', response.status, result);
   }
 
   return base64Image;
@@ -450,7 +452,7 @@ const callLegacyImagenEndpoint = async ({ endpoint, prompt, negativePrompt, apiK
   const base64Image = extractBase64Image(result);
 
   if (!base64Image) {
-    throw createImagenApiError('A resposta da Imagen API não contém imagem válida.');
+    throw createImagenApiError('A resposta da Imagen API não contém imagem válida.', response.status, result);
   }
 
   return base64Image;
