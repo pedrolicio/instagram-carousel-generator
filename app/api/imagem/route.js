@@ -42,6 +42,15 @@ const IMAGEN_DEFAULT_PARAMETERS = {
   personGeneration: IMAGEN_DEFAULT_PERSON_GENERATION
 };
 
+const MIN_SLIDES = 3;
+const MAX_SLIDES = 10;
+const DEFAULT_SLIDE_COUNT = 5;
+const DEFAULT_NEGATIVE_PROMPT =
+  'sem texto embutido, sem marcas d\'água, sem fundo escuro, baixa qualidade, borrado, distorcido';
+const STYLE_DIRECTIVES =
+  'Ilustração vetorial flat moderna, fundo claro suave (ex.: #FAFAFA), ícones geométricos consistentes, gradientes sutis, sombras leves, estética minimalista e profissional, sem texto embutido.';
+const RESOLUTION_DIRECTIVE = 'Formato quadrado 1080x1080 pixels, pronto para carrossel do Instagram.';
+
 const makeRequestId = () => {
   try {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -109,6 +118,201 @@ const truncateForLog = (value, maxLength = 500) => {
   }
 
   return `${value.slice(0, maxLength)}…`;
+};
+
+const normalizeString = (value) => (typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '');
+const normalizeBase64 = (value) => (typeof value === 'string' ? value.trim() : '');
+
+const clamp = (value, min, max) => {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(Math.max(value, min), max);
+};
+
+const parseSlideCountFromPrompt = (prompt) => {
+  const normalized = normalizeString(prompt);
+  if (!normalized) return null;
+
+  const matches = normalized.match(/\d+/g);
+  if (!matches) return null;
+
+  for (const match of matches) {
+    const numeric = Number.parseInt(match, 10);
+    if (Number.isFinite(numeric) && numeric >= MIN_SLIDES && numeric <= MAX_SLIDES) {
+      return numeric;
+    }
+  }
+
+  return null;
+};
+
+const resolveTargetSlideCount = ({ explicit, providedCount, prompt }) => {
+  const explicitNumber = Number.parseInt(explicit, 10);
+  if (Number.isFinite(explicitNumber)) {
+    return clamp(explicitNumber, MIN_SLIDES, MAX_SLIDES);
+  }
+
+  if (Number.isFinite(providedCount) && providedCount > 0) {
+    return clamp(providedCount, MIN_SLIDES, MAX_SLIDES);
+  }
+
+  const promptNumber = parseSlideCountFromPrompt(prompt);
+  if (Number.isFinite(promptNumber)) {
+    return clamp(promptNumber, MIN_SLIDES, MAX_SLIDES);
+  }
+
+  return DEFAULT_SLIDE_COUNT;
+};
+
+const describeSlidePurpose = (index, total, baseContext) => {
+  const slideNumber = index + 1;
+  const context = normalizeString(baseContext) || 'o tema do carrossel';
+
+  if (slideNumber === 1) {
+    return `Capa impactante apresentando ${context} de forma inspiradora.`;
+  }
+
+  if (slideNumber === 2) {
+    return `Visão geral destacando o principal benefício de ${context}.`;
+  }
+
+  if (slideNumber === total - 1 && total > 3) {
+    return `Resumo visual das principais ideias sobre ${context}.`;
+  }
+
+  if (slideNumber === total) {
+    return `Chamada para ação convidando o público a aplicar ${context}.`;
+  }
+
+  return `Ilustração representando a dica ${slideNumber - 1} relacionada a ${context}.`;
+};
+
+const extractFirstString = (...values) => {
+  for (const value of values) {
+    const normalized = normalizeString(value);
+    if (normalized) return normalized;
+  }
+  return '';
+};
+
+const buildSlideDescription = (slide, index, total, baseContext) => {
+  if (!slide || typeof slide !== 'object') {
+    return { description: describeSlidePurpose(index, total, baseContext), source: 'generated' };
+  }
+
+  const description = extractFirstString(
+    slide.visualPrompt,
+    slide.visualDescription,
+    slide.prompt,
+    slide.description,
+    slide.imagePrompt,
+    slide.body,
+    slide.subtitle,
+    slide.title,
+    slide.topic,
+    slide.summary
+  );
+
+  if (description) {
+    return { description, source: 'provided' };
+  }
+
+  return { description: describeSlidePurpose(index, total, baseContext), source: 'generated' };
+};
+
+const buildSlidePrompt = ({
+  baseContext,
+  slideDescription,
+  slideNumber,
+  totalSlides
+}) => {
+  const context = normalizeString(baseContext);
+  const description = normalizeString(slideDescription);
+
+  const parts = [];
+
+  if (context) {
+    parts.push(`Contexto geral: ${context}.`);
+  }
+
+  if (description) {
+    parts.push(`Slide ${slideNumber} de ${totalSlides}: ${description}.`);
+  } else {
+    parts.push(`Slide ${slideNumber} de ${totalSlides}.`);
+  }
+
+  parts.push(STYLE_DIRECTIVES);
+  parts.push(RESOLUTION_DIRECTIVE);
+
+  return parts.join(' ');
+};
+
+const mergeNegativePrompt = (customPrompt) => {
+  const normalizedCustom = normalizeString(customPrompt);
+  if (!normalizedCustom) {
+    return DEFAULT_NEGATIVE_PROMPT;
+  }
+
+  const lowerBase = DEFAULT_NEGATIVE_PROMPT.toLowerCase();
+  if (lowerBase.includes(normalizedCustom.toLowerCase())) {
+    return DEFAULT_NEGATIVE_PROMPT;
+  }
+
+  return `${DEFAULT_NEGATIVE_PROMPT}, ${normalizedCustom}`;
+};
+
+const normalizeSlideInput = (slides, baseContext, targetCount) => {
+  const providedSlides = Array.isArray(slides)
+    ? slides
+        .map((slide, index) => ({
+          slide,
+          originalIndex: index,
+          slideNumber: Number.parseInt(slide?.slideNumber, 10) || index + 1
+        }))
+        .filter((entry) => entry.slide)
+    : [];
+
+  providedSlides.sort((a, b) => a.slideNumber - b.slideNumber);
+
+  const totalSlides = clamp(targetCount || providedSlides.length || DEFAULT_SLIDE_COUNT, MIN_SLIDES, MAX_SLIDES);
+  const normalized = [];
+
+  for (let index = 0; index < totalSlides; index += 1) {
+    const provided = providedSlides[index];
+    const { description, source } = buildSlideDescription(provided?.slide, index, totalSlides, baseContext);
+    normalized.push({
+      slideNumber: index + 1,
+      description,
+      source
+    });
+  }
+
+  return normalized.map((entry, index, collection) => ({
+    slideNumber: entry.slideNumber,
+    description: entry.description,
+    source: entry.source,
+    prompt: buildSlidePrompt({
+      baseContext,
+      slideDescription: entry.description,
+      slideNumber: entry.slideNumber,
+      totalSlides: collection.length
+    })
+  }));
+};
+
+const buildSlidesForGeneration = ({ prompt, slides, slideCount }) => {
+  const baseContext = normalizeString(prompt) || 'carrossel informativo';
+  const providedCount = Array.isArray(slides) ? slides.length : 0;
+  const targetCount = resolveTargetSlideCount({
+    explicit: slideCount,
+    providedCount,
+    prompt: baseContext
+  });
+
+  if (providedCount === 0) {
+    return normalizeSlideInput([], baseContext, targetCount);
+  }
+
+  return normalizeSlideInput(slides, baseContext, targetCount);
 };
 
 const normalizeErrorMessage = (message) => (typeof message === 'string' ? message.toLowerCase() : '');
@@ -231,6 +435,102 @@ const collectCandidateContentParts = (payload) => {
   }
 
   return parts;
+};
+
+const pickBase64FromValue = (value) => {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const candidate = pickBase64FromValue(item);
+      if (candidate) return candidate;
+    }
+    return '';
+  }
+
+  if (!value) return '';
+
+  const candidates = [
+    value.data,
+    value.base64,
+    value.b64,
+    value.imageBase64,
+    value.image_base64,
+    value.base64Image,
+    value.base64_image,
+    value.bytesBase64Encoded,
+    value.bytes_base64_encoded,
+    value
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = normalizeBase64(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return '';
+};
+
+const resolveFileUriFromValue = (value) => {
+  const candidates = Array.isArray(value)
+    ? value
+    : [value?.fileData, value?.file_data, value?.media, value?.mediaData, value?.media_data, value];
+
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object') continue;
+
+    const uri =
+      candidate.fileUri ||
+      candidate.file_uri ||
+      candidate.uri ||
+      candidate.url ||
+      candidate.source ||
+      candidate.downloadUri ||
+      candidate.download_uri;
+
+    if (typeof uri === 'string' && uri.startsWith('http')) {
+      return uri;
+    }
+  }
+
+  return '';
+};
+
+const collectMediaCandidates = (payload) => {
+  const entries = [];
+  if (!payload) return entries;
+
+  const parts = collectCandidateContentParts(payload);
+  for (const part of parts) {
+    const inline = part?.inlineData || part?.inline_data;
+    const base64 = pickBase64FromValue(inline) || pickBase64FromValue(part);
+    const fileUri = resolveFileUriFromValue(part);
+
+    if (base64 || fileUri) {
+      entries.push({ base64, fileUri });
+    }
+  }
+
+  const fallbackContainers = [
+    payload?.files,
+    payload?.generatedImages,
+    payload?.generated_images,
+    payload?.images
+  ];
+
+  for (const container of fallbackContainers) {
+    if (!container) continue;
+    const items = Array.isArray(container) ? container : [container];
+    for (const item of items) {
+      const base64 = pickBase64FromValue(item);
+      const fileUri = resolveFileUriFromValue(item);
+      if (base64 || fileUri) {
+        entries.push({ base64, fileUri });
+      }
+    }
+  }
+
+  return entries;
 };
 
 const extractFileUri = (payload) => {
@@ -533,24 +833,38 @@ const buildImagenPredictPayload = ({ prompt, negativePrompt, parameters }) => {
   };
 };
 
-const callGeminiModel = async ({ prompt, negativePrompt, apiKey, requestId }) => {
+const callGeminiBatchModel = async ({ slides, negativePrompt, apiKey, requestId }) => {
   const url = new URL(GEMINI_IMAGE_ENDPOINT);
   url.searchParams.set('key', apiKey);
 
-  const promptText = negativePrompt ? `${prompt}\n\nRestrições: ${negativePrompt}` : prompt;
+  const slideCount = Array.isArray(slides) ? slides.length : 0;
+  const safeSlides = Array.isArray(slides) ? slides : [];
+
+  const introText = `Gere ${slideCount} ilustrações consistentes para um carrossel de Instagram. Use estilo flat minimalista, fundo claro e mantenha a paleta e iluminação semelhantes em todos os slides.`;
+
+  const parts = [
+    { text: introText },
+    ...safeSlides.map((slide) => ({
+      text: `Slide ${slide.slideNumber}: ${slide.prompt}`
+    }))
+  ];
+
+  if (negativePrompt) {
+    parts.push({ text: `Restrições visuais: ${negativePrompt}` });
+  }
 
   const payload = {
     contents: [
       {
         role: 'user',
-        parts: [{ text: promptText }]
+        parts
       }
     ]
   };
 
   const result = await callApi(url.toString(), payload, apiKey, {
     requestId,
-    step: GEMINI_MODEL_NAME
+    step: `${GEMINI_MODEL_NAME} (batch)`
   });
   return result;
 };
@@ -586,6 +900,81 @@ const callImagenUltraApi = async ({ prompt, negativePrompt, apiKey, requestId })
     step: IMAGEN_40_ULTRA_MODEL_NAME
   });
   return result;
+};
+
+const generateImageWithImagenFallback = async ({
+  prompt,
+  negativePrompt,
+  apiKey,
+  requestId,
+  tracker,
+  slideNumber
+}) => {
+  const track = (step, status, extra) => {
+    if (!Array.isArray(tracker)) return;
+    tracker.push({
+      slide_number: slideNumber,
+      modelo: step,
+      status,
+      ...(extra || {})
+    });
+  };
+
+  const attemptModel = async (callFn, modelName) => {
+    track(modelName, 'pending');
+    const response = await callFn();
+
+    const safetyDetail = detectSafetyBlock(response);
+    if (safetyDetail) {
+      const safetyError = new Error('Bloqueado por segurança');
+      safetyError.status = 422;
+      safetyError.details = safetyDetail;
+      track(modelName, 'safety_block', { detalhe: safetyDetail });
+      throw safetyError;
+    }
+
+    const base64 = await resolveBase64Image(response, apiKey);
+    if (base64) {
+      track(modelName, 'success');
+      return { base64, model: modelName };
+    }
+
+    const noImageError = new Error(`O modelo ${modelName} não retornou imagem.`);
+    noImageError.status = 502;
+    noImageError.details = response;
+    track(modelName, 'invalid_response');
+    throw noImageError;
+  };
+
+  try {
+    return await attemptModel(
+      () => callImagenStandardApi({ prompt, negativePrompt, apiKey, requestId }),
+      IMAGEN_40_MODEL_NAME
+    );
+  } catch (primaryError) {
+    const shouldTryUltra =
+      isMissingImageError(primaryError) ||
+      !primaryError?.status ||
+      primaryError.status >= 500 ||
+      primaryError.status === 404 ||
+      primaryError.status === 405;
+
+    if (!shouldTryUltra && primaryError?.status && primaryError.status < 500 && primaryError.status !== 422) {
+      track(IMAGEN_40_MODEL_NAME, 'failed', formatErrorForLog(primaryError));
+      throw primaryError;
+    }
+
+    try {
+      return await attemptModel(
+        () => callImagenUltraApi({ prompt, negativePrompt, apiKey, requestId }),
+        IMAGEN_40_ULTRA_MODEL_NAME
+      );
+    } catch (ultraError) {
+      track(IMAGEN_40_ULTRA_MODEL_NAME, 'failed', formatErrorForLog(ultraError));
+      ultraError.cause = primaryError;
+      throw ultraError;
+    }
+  }
 };
 
 const arrayBufferToBase64 = (arrayBuffer) => {
@@ -649,10 +1038,70 @@ const resolveBase64Image = async (payload, apiKey) => {
   return base64;
 };
 
-const generateImage = async ({ prompt, negativePrompt, apiKey, requestId }) => {
+const resolveAllBase64Images = async (payload, apiKey) => {
+  const candidates = collectMediaCandidates(payload);
+  if (!candidates.length) {
+    return [];
+  }
+
+  const seen = new Set();
+  const uniqueCandidates = candidates.filter((candidate) => {
+    const base64Key = candidate.base64 ? `b64:${candidate.base64.slice(0, 40)}` : '';
+    const fileUriKey = candidate.fileUri ? `uri:${candidate.fileUri}` : '';
+    const key = base64Key || fileUriKey;
+    if (!key) {
+      return false;
+    }
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+
+  const results = [];
+
+  for (const candidate of uniqueCandidates) {
+    let base64 = normalizeBase64(candidate.base64);
+    const fileUri = candidate.fileUri || '';
+
+    if (!base64 && fileUri) {
+      const fetched = await fetchFileUriAsBase64(fileUri, apiKey);
+      base64 = normalizeBase64(fetched);
+    }
+
+    if (base64) {
+      results.push({ base64, fileUri });
+    }
+  }
+
+  return results;
+};
+
+const generateImagesBatch = async ({ slides, negativePrompt, apiKey, requestId }) => {
+  if (!Array.isArray(slides) || slides.length === 0) {
+    throw new Error('Nenhum slide disponível para geração de imagens.');
+  }
+
+  const fallbackTracker = [];
+
+  const mapSlidesWithImages = (images) =>
+    slides.map((slide, index) => {
+      const resolved = images[index] || {};
+      return {
+        slide_number: slide.slideNumber,
+        prompt_gerado: slide.prompt,
+        modelo_utilizado: resolved.model || (resolved.base64 ? resolved.modelName || GEMINI_MODEL_NAME : null),
+        imagem_base64: resolved.base64 || null,
+        file_uri: resolved.fileUri || null
+      };
+    });
+
   try {
-    logInfo(requestId, `Iniciando tentativa com ${GEMINI_MODEL_NAME}.`);
-    const gemini = await callGeminiModel({ prompt, negativePrompt, apiKey, requestId });
+    logInfo(requestId, `Iniciando batch com ${GEMINI_MODEL_NAME}.`, { totalSlides: slides.length });
+    const gemini = await callGeminiBatchModel({ slides, negativePrompt, apiKey, requestId });
 
     const safetyDetail = detectSafetyBlock(gemini);
     if (safetyDetail) {
@@ -663,21 +1112,71 @@ const generateImage = async ({ prompt, negativePrompt, apiKey, requestId }) => {
       throw safetyError;
     }
 
-    const base64 = await resolveBase64Image(gemini, apiKey);
-    if (base64) {
-      logInfo(requestId, `${GEMINI_MODEL_NAME} retornou imagem com sucesso.`);
-      return base64;
+    const geminiImagesRaw = await resolveAllBase64Images(gemini, apiKey);
+    const geminiImages = geminiImagesRaw.map((entry) => ({
+      ...entry,
+      base64: entry.base64,
+      model: GEMINI_MODEL_NAME,
+      modelName: GEMINI_MODEL_NAME
+    }));
+
+    const mapped = mapSlidesWithImages(geminiImages);
+    const missingIndices = mapped
+      .map((item, index) => (!item.imagem_base64 ? index : -1))
+      .filter((index) => index >= 0);
+
+    if (missingIndices.length === 0) {
+      logInfo(requestId, `${GEMINI_MODEL_NAME} retornou todas as imagens com sucesso.`);
+      return {
+        images: mapped,
+        fallbackUsed: false,
+        fallbackTracker,
+        primaryModel: GEMINI_MODEL_NAME
+      };
     }
 
-    const noImageError = new Error(
-      `O modelo ${GEMINI_MODEL_NAME} não retornou imagem. Exemplo de prompt funcional: ${PROMPT_EXEMPLO}`
-    );
-    noImageError.status = 502;
-    noImageError.details = gemini;
-    logWarn(requestId, `${GEMINI_MODEL_NAME} respondeu sem imagem.`, {
-      dataKeys: gemini && typeof gemini === 'object' ? Object.keys(gemini) : []
+    logWarn(requestId, `${GEMINI_MODEL_NAME} retornou menos imagens do que o esperado. Iniciando fallback.`, {
+      missingSlides: missingIndices.map((index) => slides[index]?.slideNumber)
     });
-    throw noImageError;
+
+    for (const index of missingIndices) {
+      const slide = slides[index];
+      try {
+        const fallbackResult = await generateImageWithImagenFallback({
+          prompt: slide.prompt,
+          negativePrompt,
+          apiKey,
+          requestId,
+          tracker: fallbackTracker,
+          slideNumber: slide.slideNumber
+        });
+
+        mapped[index] = {
+          slide_number: slide.slideNumber,
+          prompt_gerado: slide.prompt,
+          modelo_utilizado: fallbackResult.model,
+          imagem_base64: fallbackResult.base64,
+          file_uri: null
+        };
+      } catch (fallbackError) {
+        logError(
+          requestId,
+          `Fallback falhou para o slide ${slide.slideNumber}.`,
+          formatErrorForLog(fallbackError)
+        );
+        throw fallbackError;
+      }
+    }
+
+    return {
+      images: mapped.map((item) => ({
+        ...item,
+        modelo_utilizado: item.modelo_utilizado || GEMINI_MODEL_NAME
+      })),
+      fallbackUsed: true,
+      fallbackTracker,
+      primaryModel: GEMINI_MODEL_NAME
+    };
   } catch (error) {
     const shouldTryLegacy =
       isMissingImageError(error) ||
@@ -686,105 +1185,53 @@ const generateImage = async ({ prompt, negativePrompt, apiKey, requestId }) => {
       error.status === 404 ||
       error.status === 405;
 
-    if (!shouldTryLegacy && error.status !== 422) {
+    if (!shouldTryLegacy && error?.status !== 422) {
       logError(requestId, `Falha irrecuperável em ${GEMINI_MODEL_NAME}.`, formatErrorForLog(error));
       throw error;
     }
 
-    try {
-      logWarn(
-        requestId,
-        `${GEMINI_MODEL_NAME} falhou (fallbackCandidate=${shouldTryLegacy}). Tentando ${IMAGEN_40_MODEL_NAME}.`,
-        formatErrorForLog(error)
-      );
-      const legacy = await callImagenStandardApi({ prompt, negativePrompt, apiKey, requestId });
+    logWarn(
+      requestId,
+      `${GEMINI_MODEL_NAME} indisponível (fallbackCandidate=${shouldTryLegacy}). Gerando com Imagen.`,
+      formatErrorForLog(error)
+    );
 
-      const safetyDetail = detectSafetyBlock(legacy);
-      if (safetyDetail) {
-        const safetyError = new Error('Bloqueado por segurança');
-        safetyError.status = 422;
-        safetyError.details = safetyDetail;
-        logWarn(requestId, `${IMAGEN_40_MODEL_NAME} bloqueou por segurança.`, { detail: safetyDetail });
-        throw safetyError;
-      }
+    const mapped = [];
 
-      const base64 = await resolveBase64Image(legacy, apiKey);
-      if (base64) {
-        logInfo(requestId, `${IMAGEN_40_MODEL_NAME} retornou imagem com sucesso.`);
-        return base64;
-      }
-
-      const legacyError = new Error(
-        `O modelo ${IMAGEN_40_MODEL_NAME} não retornou imagem. Exemplo de prompt funcional: ${PROMPT_EXEMPLO}`
-      );
-      legacyError.status = 502;
-      legacyError.details = legacy;
-      logWarn(requestId, `${IMAGEN_40_MODEL_NAME} respondeu sem imagem.`, {
-        dataKeys: legacy && typeof legacy === 'object' ? Object.keys(legacy) : []
-      });
-      throw legacyError;
-    } catch (fallbackError) {
-      const shouldTryUltra =
-        isMissingImageError(fallbackError) ||
-        !fallbackError?.status ||
-        fallbackError.status >= 500 ||
-        fallbackError.status === 404 ||
-        fallbackError.status === 405;
-
-      if (!shouldTryUltra && fallbackError?.status && fallbackError.status < 500 && fallbackError.status !== 422) {
-        logError(requestId, `Falha irrecuperável em ${IMAGEN_40_MODEL_NAME}.`, formatErrorForLog(fallbackError));
-        throw fallbackError;
-      }
-
-      fallbackError.cause = error;
-
+    for (const slide of slides) {
       try {
-        logWarn(
-          requestId,
-          `${IMAGEN_40_MODEL_NAME} falhou (fallbackCandidate=${shouldTryUltra}). Tentando ${IMAGEN_40_ULTRA_MODEL_NAME}.`,
-          formatErrorForLog(fallbackError)
-        );
-        const legacyFallback = await callImagenUltraApi({
-          prompt,
+        const fallbackResult = await generateImageWithImagenFallback({
+          prompt: slide.prompt,
           negativePrompt,
           apiKey,
-          requestId
+          requestId,
+          tracker: fallbackTracker,
+          slideNumber: slide.slideNumber
         });
 
-        const safetyDetail = detectSafetyBlock(legacyFallback);
-        if (safetyDetail) {
-          const safetyError = new Error('Bloqueado por segurança');
-          safetyError.status = 422;
-          safetyError.details = safetyDetail;
-          logWarn(requestId, `${IMAGEN_40_ULTRA_MODEL_NAME} bloqueou por segurança.`, { detail: safetyDetail });
-          throw safetyError;
-        }
-
-        const base64 = await resolveBase64Image(legacyFallback, apiKey);
-        if (base64) {
-          logInfo(requestId, `${IMAGEN_40_ULTRA_MODEL_NAME} retornou imagem com sucesso.`);
-          return base64;
-        }
-
-        const legacyError = new Error(
-          `O modelo ${IMAGEN_40_ULTRA_MODEL_NAME} não retornou imagem. Exemplo de prompt funcional: ${PROMPT_EXEMPLO}`
+        mapped.push({
+          slide_number: slide.slideNumber,
+          prompt_gerado: slide.prompt,
+          modelo_utilizado: fallbackResult.model,
+          imagem_base64: fallbackResult.base64,
+          file_uri: null
+        });
+      } catch (fallbackError) {
+        logError(
+          requestId,
+          `Fallback falhou para o slide ${slide.slideNumber}.`,
+          formatErrorForLog(fallbackError)
         );
-        legacyError.status = 502;
-        legacyError.details = legacyFallback;
-        legacyError.cause = fallbackError;
-        logWarn(requestId, `${IMAGEN_40_ULTRA_MODEL_NAME} respondeu sem imagem.`, {
-          dataKeys: legacyFallback && typeof legacyFallback === 'object' ? Object.keys(legacyFallback) : []
-        });
-        throw legacyError;
-      } catch (legacyError) {
-        logError(requestId, `${IMAGEN_40_ULTRA_MODEL_NAME} também falhou.`, {
-          primary: formatErrorForLog(legacyError),
-          secondary: formatErrorForLog(fallbackError)
-        });
-        legacyError.cause = legacyError.cause ?? fallbackError;
-        throw legacyError;
+        throw fallbackError;
       }
     }
+
+    return {
+      images: mapped,
+      fallbackUsed: true,
+      fallbackTracker,
+      primaryModel: GEMINI_MODEL_NAME
+    };
   }
 };
 
@@ -806,7 +1253,10 @@ export async function POST(request) {
   }
 
   const prompt = typeof body?.prompt === 'string' ? body.prompt.trim() : '';
-  const negativePrompt = typeof body?.negativePrompt === 'string' ? body.negativePrompt.trim() : '';
+  const slidesInput = Array.isArray(body?.slides) ? body.slides : [];
+  const slideCountInput =
+    body?.slideCount ?? body?.slidesCount ?? body?.totalSlides ?? slidesInput.length ?? null;
+  const negativePromptInput = typeof body?.negativePrompt === 'string' ? body.negativePrompt.trim() : '';
   const providedKey = typeof body?.apiKey === 'string' ? body.apiKey.trim() : '';
   const apiKey = providedKey || (process.env.GOOGLE_API_KEY || '').trim();
 
@@ -815,21 +1265,62 @@ export async function POST(request) {
     return jsonResponse({ error: 'A API Key é obrigatória.' }, { status: 401 }, request);
   }
 
-  if (!prompt) {
-    logWarn(requestId, 'Prompt ausente na requisição.');
-    return jsonResponse({ error: 'O prompt é obrigatório.', exemplo: PROMPT_EXEMPLO }, { status: 400 }, request);
+  if (!prompt && slidesInput.length === 0) {
+    logWarn(requestId, 'Prompt e lista de slides ausentes na requisição.');
+    return jsonResponse({ error: 'Informe um prompt base ou os detalhes dos slides.' }, { status: 400 }, request);
   }
 
-  logInfo(requestId, 'Prompt recebido.', {
-    prompt: truncateForLog(prompt),
-    negativePrompt: negativePrompt ? truncateForLog(negativePrompt) : undefined,
-    negativePromptLength: negativePrompt.length
+  const slidesForGeneration = buildSlidesForGeneration({
+    prompt,
+    slides: slidesInput,
+    slideCount: slideCountInput
+  });
+
+  const resolvedNegativePrompt = mergeNegativePrompt(negativePromptInput);
+
+  logInfo(requestId, 'Contexto recebido para geração.', {
+    prompt: prompt ? truncateForLog(prompt) : undefined,
+    slides: slidesForGeneration.length,
+    negativePrompt: truncateForLog(resolvedNegativePrompt, 200)
+  });
+
+  logInfo(requestId, 'Prompts visuais gerados para os slides.', {
+    slides: slidesForGeneration.map((slide) => ({
+      slide: slide.slideNumber,
+      origem: slide.source,
+      prompt: truncateForLog(slide.prompt, 200)
+    }))
   });
 
   try {
-    const image = await generateImage({ prompt, negativePrompt, apiKey, requestId });
-    logInfo(requestId, 'Imagem gerada com sucesso.');
-    return jsonResponse({ image }, undefined, request);
+    const generationResult = await generateImagesBatch({
+      slides: slidesForGeneration,
+      negativePrompt: resolvedNegativePrompt,
+      apiKey,
+      requestId
+    });
+
+    logInfo(requestId, 'Imagens geradas com sucesso.', {
+      fallback: generationResult.fallbackUsed,
+      totalSlides: slidesForGeneration.length
+    });
+
+    const responsePayload = {
+      requestId,
+      modelo_principal: generationResult.primaryModel,
+      negative_prompt_utilizado: resolvedNegativePrompt,
+      fallback: {
+        utilizado: generationResult.fallbackUsed,
+        etapas: generationResult.fallbackTracker
+      },
+      imagens: generationResult.images
+    };
+
+    if (generationResult.images.length === 1 && generationResult.images[0]?.imagem_base64) {
+      responsePayload.image = generationResult.images[0].imagem_base64;
+    }
+
+    return jsonResponse(responsePayload, undefined, request);
   } catch (error) {
     const formattedError = formatErrorForLog(error);
     logError(requestId, 'Falha ao gerar imagem.', formattedError);
