@@ -3,7 +3,10 @@ import { buildImagenPrompt, buildNegativePrompt } from '../utils/promptBuilder.j
 const IMAGEN_PROXY_ENDPOINT = '/api/imagen';
 const IMAGEN_DEFAULT_MODEL = 'imagen-4.0-generate-001';
 const IMAGEN_DEFAULT_ENDPOINT =
-  `https://generativelanguage.googleapis.com/v1beta/models/${IMAGEN_DEFAULT_MODEL}:generateContent`;
+  `https://generativelanguage.googleapis.com/v1beta/models/${IMAGEN_DEFAULT_MODEL}:predict`;
+const IMAGEN_ULTRA_MODEL = 'imagen-4.0-ultra-generate-001';
+const IMAGEN_ULTRA_ENDPOINT =
+  `https://generativelanguage.googleapis.com/v1beta/models/${IMAGEN_ULTRA_MODEL}:predict`;
 const GEMINI_IMAGE_ENDPOINT =
   'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent';
 const LEGACY_GENERATE_ENDPOINT =
@@ -280,14 +283,7 @@ const isMissingImageError = (error) => {
 };
 
 const callImagenDefaultModel = async ({ prompt, negativePrompt, apiKey, signal }) => {
-  const payload = {
-    contents: [
-      {
-        role: 'user',
-        parts: [{ text: buildGeminiPromptText(prompt, negativePrompt) }]
-      }
-    ]
-  };
+  const payload = buildImagenPredictPayload({ prompt, negativePrompt });
 
   const requestUrl = new URL(IMAGEN_DEFAULT_ENDPOINT);
   requestUrl.searchParams.set('key', apiKey);
@@ -321,6 +317,56 @@ const callImagenDefaultModel = async ({ prompt, negativePrompt, apiKey, signal }
 
   if (!base64Image) {
     throw createImagenApiError('O modelo Imagen 4.0 não retornou uma imagem válida.', response.status, result);
+  }
+
+  return base64Image;
+};
+
+const callImagenUltraModel = async ({ prompt, negativePrompt, apiKey, signal }) => {
+  const payload = buildImagenPredictPayload({
+    prompt,
+    negativePrompt,
+    parameters: {
+      sampleCount: 1,
+      aspectRatio: IMAGEN_CONFIG.aspectRatio,
+      outputMimeType: 'image/png',
+      safetyFilterLevel: IMAGEN_CONFIG.safetyFilterLevel,
+      personGeneration: IMAGEN_CONFIG.personGeneration
+    }
+  });
+
+  const requestUrl = new URL(IMAGEN_ULTRA_ENDPOINT);
+  requestUrl.searchParams.set('key', apiKey);
+
+  const response = await fetch(requestUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': apiKey
+    },
+    body: JSON.stringify(payload),
+    signal
+  });
+
+  if (!response.ok) {
+    let errorPayload = null;
+    try {
+      errorPayload = await response.json();
+    } catch (error) {
+      errorPayload = null;
+    }
+
+    const message =
+      errorPayload?.error?.message || errorPayload?.message || 'Falha ao gerar imagem com o modelo Imagen 4.0 Ultra.';
+    const retryAfterSeconds = extractRetryAfterSeconds(response, errorPayload, message);
+    throw createImagenApiError(message, response.status, errorPayload, retryAfterSeconds);
+  }
+
+  const result = await response.json();
+  const base64Image = extractBase64Image(result);
+
+  if (!base64Image) {
+    throw createImagenApiError('O modelo Imagen 4.0 Ultra não retornou uma imagem válida.', response.status, result);
   }
 
   return base64Image;
@@ -448,6 +494,54 @@ const buildGeminiPromptText = (prompt, negativePrompt) => {
   return `${prompt}\n\nRestrições: ${negativePrompt}`;
 };
 
+const buildImagenPredictPayload = ({ prompt, negativePrompt, parameters: parameterOverrides }) => {
+  const instance = { prompt };
+
+  if (negativePrompt) {
+    instance.negativePrompt = negativePrompt;
+    instance.negative_prompt = negativePrompt;
+  }
+
+  const parameters = {
+    sampleCount: IMAGEN_CONFIG.numberOfImages,
+    aspectRatio: IMAGEN_CONFIG.aspectRatio,
+    outputMimeType: 'image/png',
+    safetyFilterLevel: IMAGEN_CONFIG.safetyFilterLevel,
+    personGeneration: IMAGEN_CONFIG.personGeneration,
+    ...(parameterOverrides || {})
+  };
+
+  const compatibilityParameters = {};
+
+  if (parameters.sampleCount != null) {
+    compatibilityParameters.sample_count = parameters.sampleCount;
+  }
+
+  if (parameters.aspectRatio) {
+    compatibilityParameters.aspect_ratio = parameters.aspectRatio;
+  }
+
+  if (parameters.outputMimeType) {
+    compatibilityParameters.output_mime_type = parameters.outputMimeType;
+  }
+
+  if (parameters.safetyFilterLevel) {
+    compatibilityParameters.safety_filter_level = parameters.safetyFilterLevel;
+  }
+
+  if (parameters.personGeneration) {
+    compatibilityParameters.person_generation = parameters.personGeneration;
+  }
+
+  return {
+    instances: [instance],
+    parameters: {
+      ...parameters,
+      ...compatibilityParameters
+    }
+  };
+};
+
 const shouldRetryWithFallbackModel = (error) => {
   if (!error) return false;
   if (error.status === 404 || error.status === 405) return true;
@@ -527,6 +621,7 @@ const callLegacyImagenEndpoint = async ({ endpoint, prompt, negativePrompt, apiK
 
 const callImagenApiDirectly = async ({ prompt, negativePrompt, apiKey, signal }) => {
   let primaryError = null;
+  let ultraError = null;
 
   try {
     return await callImagenDefaultModel({ prompt, negativePrompt, apiKey, signal });
@@ -538,10 +633,20 @@ const callImagenApiDirectly = async ({ prompt, negativePrompt, apiKey, signal })
   }
 
   try {
+    return await callImagenUltraModel({ prompt, negativePrompt, apiKey, signal });
+  } catch (error) {
+    ultraError = error;
+    if (!shouldRetryWithFallbackModel(error)) {
+      error.cause = primaryError || error.cause;
+      throw error;
+    }
+  }
+
+  try {
     return await callGeminiFlashImageModel({ prompt, negativePrompt, apiKey, signal });
   } catch (legacyError) {
     if (!shouldRetryWithFallbackModel(legacyError)) {
-      legacyError.cause = primaryError || legacyError.cause;
+      legacyError.cause = ultraError || primaryError || legacyError.cause;
       throw legacyError;
     }
 
@@ -555,7 +660,7 @@ const callImagenApiDirectly = async ({ prompt, negativePrompt, apiKey, signal })
       });
     } catch (fallbackError) {
       if (!shouldRetryWithFallbackModel(fallbackError)) {
-        fallbackError.cause = primaryError || legacyError;
+        fallbackError.cause = ultraError || primaryError || legacyError;
         throw fallbackError;
       }
 
@@ -568,7 +673,7 @@ const callImagenApiDirectly = async ({ prompt, negativePrompt, apiKey, signal })
           signal
         });
       } catch (finalError) {
-        finalError.cause = primaryError || fallbackError;
+        finalError.cause = ultraError || primaryError || fallbackError;
         throw finalError;
       }
     }

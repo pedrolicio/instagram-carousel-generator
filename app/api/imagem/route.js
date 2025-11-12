@@ -7,9 +7,9 @@ const IMAGEN_40_MODEL_NAME = 'imagen-4.0-generate-001';
 const IMAGEN_40_ULTRA_MODEL_NAME = 'imagen-4.0-ultra-generate-001';
 const GEMINI_IMAGE_ENDPOINT =
   'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent';
-const LEGACY_GENERATE_ENDPOINT =
+const IMAGEN_STANDARD_ENDPOINT =
   'https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict';
-const LEGACY_FALLBACK_GENERATE_ENDPOINT =
+const IMAGEN_ULTRA_ENDPOINT =
   'https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-ultra-generate-001:predict';
 
 const MISSING_IMAGE_ERROR_PATTERNS = [
@@ -27,6 +27,14 @@ const DEFAULT_ALLOWED_ORIGINS = [
   'http://localhost:5173',
   'https://instagram-carousel-generator-git-main-pedro-licios-projects.vercel.app'
 ];
+
+const IMAGEN_DEFAULT_PARAMETERS = {
+  sampleCount: 1,
+  aspectRatio: '4:5',
+  outputMimeType: 'image/png',
+  safetyFilterLevel: 'block_some',
+  personGeneration: 'allow_adult'
+};
 
 const makeRequestId = () => {
   try {
@@ -475,6 +483,50 @@ const callApi = async (url, payload, apiKey, context = {}) => {
   return data;
 };
 
+const buildImagenPredictPayload = ({ prompt, negativePrompt, parameters }) => {
+  const instance = { prompt };
+
+  if (negativePrompt) {
+    instance.negativePrompt = negativePrompt;
+    instance.negative_prompt = negativePrompt;
+  }
+
+  const mergedParameters = {
+    ...IMAGEN_DEFAULT_PARAMETERS,
+    ...(parameters || {})
+  };
+
+  const compatibility = {};
+
+  if (mergedParameters.sampleCount != null) {
+    compatibility.sample_count = mergedParameters.sampleCount;
+  }
+
+  if (mergedParameters.aspectRatio) {
+    compatibility.aspect_ratio = mergedParameters.aspectRatio;
+  }
+
+  if (mergedParameters.outputMimeType) {
+    compatibility.output_mime_type = mergedParameters.outputMimeType;
+  }
+
+  if (mergedParameters.safetyFilterLevel) {
+    compatibility.safety_filter_level = mergedParameters.safetyFilterLevel;
+  }
+
+  if (mergedParameters.personGeneration) {
+    compatibility.person_generation = mergedParameters.personGeneration;
+  }
+
+  return {
+    instances: [instance],
+    parameters: {
+      ...mergedParameters,
+      ...compatibility
+    }
+  };
+};
+
 const callGeminiModel = async ({ prompt, negativePrompt, apiKey, requestId }) => {
   const url = new URL(GEMINI_IMAGE_ENDPOINT);
   url.searchParams.set('key', apiKey);
@@ -497,32 +549,11 @@ const callGeminiModel = async ({ prompt, negativePrompt, apiKey, requestId }) =>
   return result;
 };
 
-const callLegacyImagenApi = async ({ prompt, negativePrompt, apiKey, requestId }) => {
-  const url = new URL(LEGACY_GENERATE_ENDPOINT);
+const callImagenStandardApi = async ({ prompt, negativePrompt, apiKey, requestId }) => {
+  const url = new URL(IMAGEN_STANDARD_ENDPOINT);
   url.searchParams.set('key', apiKey);
 
-  const instance = {
-    prompt: { text: prompt }
-  };
-
-  if (negativePrompt) {
-    instance.negativePrompt = { text: negativePrompt };
-    instance.negative_prompt = { text: negativePrompt };
-  }
-
-  const payload = {
-    instances: [instance],
-    parameters: {
-      sampleCount: 1,
-      aspectRatio: '1:1',
-      outputMimeType: 'image/png',
-      output_mime_type: 'image/png',
-      safetyFilterLevel: 'block_some',
-      safety_filter_level: 'block_some',
-      personGeneration: 'block_all',
-      person_generation: 'block_all'
-    }
-  };
+  const payload = buildImagenPredictPayload({ prompt, negativePrompt });
 
   const result = await callApi(url.toString(), payload, apiKey, {
     requestId,
@@ -531,32 +562,18 @@ const callLegacyImagenApi = async ({ prompt, negativePrompt, apiKey, requestId }
   return result;
 };
 
-const callLegacyFallbackImagenApi = async ({ prompt, negativePrompt, apiKey, requestId }) => {
-  const url = new URL(LEGACY_FALLBACK_GENERATE_ENDPOINT);
+const callImagenUltraApi = async ({ prompt, negativePrompt, apiKey, requestId }) => {
+  const url = new URL(IMAGEN_ULTRA_ENDPOINT);
   url.searchParams.set('key', apiKey);
 
-  const instance = {
-    prompt: { text: prompt }
-  };
-
-  if (negativePrompt) {
-    instance.negativePrompt = { text: negativePrompt };
-    instance.negative_prompt = { text: negativePrompt };
-  }
-
-  const payload = {
-    instances: [instance],
+  const payload = buildImagenPredictPayload({
+    prompt,
+    negativePrompt,
     parameters: {
-      sampleCount: 1,
-      aspectRatio: '1:1',
-      outputMimeType: 'image/png',
-      output_mime_type: 'image/png',
-      safetyFilterLevel: 'block_some',
-      safety_filter_level: 'block_some',
-      personGeneration: 'block_all',
-      person_generation: 'block_all'
+      ...IMAGEN_DEFAULT_PARAMETERS,
+      sampleCount: 1
     }
-  };
+  });
 
   const result = await callApi(url.toString(), payload, apiKey, {
     requestId,
@@ -674,7 +691,7 @@ const generateImage = async ({ prompt, negativePrompt, apiKey, requestId }) => {
         `${GEMINI_MODEL_NAME} falhou (fallbackCandidate=${shouldTryLegacy}). Tentando ${IMAGEN_40_MODEL_NAME}.`,
         formatErrorForLog(error)
       );
-      const legacy = await callLegacyImagenApi({ prompt, negativePrompt, apiKey, requestId });
+      const legacy = await callImagenStandardApi({ prompt, negativePrompt, apiKey, requestId });
 
       const safetyDetail = detectSafetyBlock(legacy);
       if (safetyDetail) {
@@ -721,7 +738,7 @@ const generateImage = async ({ prompt, negativePrompt, apiKey, requestId }) => {
           `${IMAGEN_40_MODEL_NAME} falhou (fallbackCandidate=${shouldTryUltra}). Tentando ${IMAGEN_40_ULTRA_MODEL_NAME}.`,
           formatErrorForLog(fallbackError)
         );
-        const legacyFallback = await callLegacyFallbackImagenApi({
+        const legacyFallback = await callImagenUltraApi({
           prompt,
           negativePrompt,
           apiKey,
