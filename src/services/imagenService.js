@@ -377,7 +377,10 @@ const extractInlineDataBase64 = (part) => {
     return '';
   }
 
-  const inlineData = part.inlineData || part.inline_data;
+  const inlineData =
+    (typeof part.inlineData === 'object' && part.inlineData) ||
+    (typeof part.inline_data === 'object' && part.inline_data);
+
   if (!inlineData || typeof inlineData !== 'object') {
     return '';
   }
