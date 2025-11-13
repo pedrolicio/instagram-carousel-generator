@@ -77,6 +77,26 @@ const logInfo = (requestId, message, meta) => logWithContext('info', requestId, 
 const logWarn = (requestId, message, meta) => logWithContext('warn', requestId, message, meta);
 const logError = (requestId, message, meta) => logWithContext('error', requestId, message, meta);
 
+const SENSITIVE_QUERY_PARAMETERS = ['key', 'api_key', 'apikey', 'x-goog-api-key'];
+
+const sanitizeUrlForLogs = (url) => {
+  if (typeof url !== 'string' || !url) {
+    return url;
+  }
+
+  try {
+    const parsed = new URL(url);
+    for (const param of SENSITIVE_QUERY_PARAMETERS) {
+      if (parsed.searchParams.has(param)) {
+        parsed.searchParams.set(param, '[REDACTED]');
+      }
+    }
+    return parsed.toString();
+  } catch (error) {
+    return url.replace(/(key|api_key|apikey|x-goog-api-key)=([^&]+)/gi, '$1=[REDACTED]');
+  }
+};
+
 const formatErrorForLog = (error) => {
   if (!error || typeof error !== 'object') {
     return { message: String(error) };
@@ -744,8 +764,9 @@ const isQuotaError = (error) => {
 
 const callApi = async (url, payload, apiKey, context = {}) => {
   const { requestId, step } = context;
+  const sanitizedUrl = sanitizeUrlForLogs(url);
   logInfo(requestId, `Enviando requisição ${step || ''}`.trim(), {
-    url,
+    url: sanitizedUrl,
     hasPayload: Boolean(payload),
     payloadKeys: payload && typeof payload === 'object' ? Object.keys(payload) : []
   });
@@ -771,17 +792,19 @@ const callApi = async (url, payload, apiKey, context = {}) => {
     const apiError = new Error(message);
     apiError.status = response.status;
     apiError.payload = data;
-    logError(requestId, `Resposta não-ok da API em ${step || url}`, {
+    logError(requestId, `Resposta não-ok da API em ${step || sanitizedUrl}`, {
       status: response.status,
       statusText: response.statusText,
+      requestUrl: sanitizedUrl,
       body: data?.error || data,
       message
     });
     throw apiError;
   }
 
-  logInfo(requestId, `Resposta bem-sucedida em ${step || url}`, {
+  logInfo(requestId, `Resposta bem-sucedida em ${step || sanitizedUrl}`, {
     status: response.status,
+    requestUrl: sanitizedUrl,
     hasData: Boolean(data),
     dataKeys: data && typeof data === 'object' ? Object.keys(data) : []
   });
